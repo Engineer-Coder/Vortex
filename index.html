@@ -16,7 +16,9 @@
   <div id="root"></div>
 
   <script>
-    import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react';
+    // Relying on global React/ReactDOM objects without Babel/JSX transformation
+    const { useState, useEffect, createContext, useContext, createElement: e } = React;
+    
 
 // ============================================================================
 // ⚡ MATH UTILITIES & SEEDED PROCEDURAL ENGINE
