@@ -18,13 +18,11 @@
   <script>
     // Relying on global React/ReactDOM objects without Babel/JSX transformation
     const { useState, useEffect, createContext, useContext, createElement: e } = React;
-    
 
-// ============================================================================
-// ⚡ MATH UTILITIES & SEEDED PROCEDURAL ENGINE
-// ============================================================================
-
-export function seededRandom(seed) {
+    function App() {
+      // Example using React.createElement instead of JSX to avoid transpilation errors
+      return e('div', { className: 'flex items-center justify-center h-screen' },
+        e('p', { className: 'text-slate-500 font-mono' }, export function seededRandom(seed) {
   const m = 0x80000000; 
   const a = 1103515245;
   const c = 12345;
@@ -1363,15 +1361,12 @@ function GameScreen() {
       </main>
     </div>
   );
-}
+})
+      );
+    }
 
-export default function App() {
-  return (
-    <GameProvider>
-      <GameScreen />
-    </GameProvider>
-  );
-}
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(e(App));
   </script>
 </body>
 </html>
