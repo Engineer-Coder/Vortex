@@ -1,0 +1,1422 @@
+import React, { createContext, useContext, useState, useEffect, useMemo, useCallback } from 'react';
+
+// ============================================================================
+// ⚡ MATH UTILITIES & SEEDED PROCEDURAL ENGINE
+// ============================================================================
+
+export function seededRandom(seed) {
+  const m = 0x80000000; 
+  const a = 1103515245;
+  const c = 12345;
+  let state = seed ? (typeof seed === 'string' ? hashString(seed) : seed) : Math.floor(Math.random() * (m - 1));
+
+  return function() {
+    state = (a * state + c) % m;
+    return state / (m - 1);
+  };
+}
+
+function hashString(str) {
+  let hash = 0;
+  for (let i = 0; i < str.length; i++) {
+    hash = (hash << 5) - hash + str.charCodeAt(i);
+    hash |= 0;
+  }
+  return Math.abs(hash);
+}
+
+// Generates 3 unique choices for the next depth layer with full support for mutators, modifiers and factions
+export function generateNodeChoices(depth, runSeed, prestigeModifiers, activeChallenge) {
+  const choices = [];
+  const paths = ['Alpha', 'Beta', 'Gamma'];
+  const factions = ['Tech', 'Bio', 'Cosmic'];
+
+  for (let i = 0; i < 3; i++) {
+    const choiceSeed = runSeed + depth * 100 + i;
+    const rand = seededRandom(choiceSeed);
+
+    const dampenerLevel = prestigeModifiers.exponentDampener || 0;
+    const tamerLevel = prestigeModifiers.varianceTamer || 0;
+    const costReduction = prestigeModifiers.costReduction || 0;
+
+    // Challenge Run Mutator 1: Black Hole doubles baseline cost scaling
+    let baseGrowthRate = activeChallenge === 'black_hole' ? 0.44 : 0.22; 
+    const dynamicExponentGrowth = baseGrowthRate / (1 + dampenerLevel * 0.15);
+    const scalingFactor = 2.3 + (dynamicExponentGrowth * Math.floor(depth / 3));
+    
+    const baseCost = 10;
+    const rawCost = depth === 1 ? baseCost : Math.floor(baseCost * Math.pow(scalingFactor, depth - 1));
+
+    let costMultiplier = 1.0;
+    let yieldMultiplier = 1.0;
+    let pathType = '';
+
+    // Assign Faction dynamically based on seeded roll
+    const faction = factions[Math.floor(rand() * factions.length)];
+
+    const tamerBonus = tamerLevel * 0.10;
+
+    // Mutator 2: Solar Flare disables Heavy nodes, replaces them with random path Types
+    let forcedPathRoll = i;
+    if (activeChallenge === 'solar_flare' && forcedPathRoll === 1) {
+      forcedPathRoll = rand() > 0.5 ? 0 : 2; 
+    }
+
+    if (depth === 1) {
+      if (forcedPathRoll === 0) {
+        pathType = 'Stable';
+        costMultiplier = 0.3 + rand() * 0.2; 
+        yieldMultiplier = 0.8 + rand() * 0.4;
+      } else if (forcedPathRoll === 1) {
+        pathType = 'Heavy';
+        costMultiplier = 0.8 + rand() * 0.2; 
+        yieldMultiplier = 2.0 + rand() * 1.0;
+      } else {
+        pathType = 'Volatile';
+        costMultiplier = 0.4 + rand() * 0.5; 
+        yieldMultiplier = 0.5 + rand() * 3.0;
+      }
+    } else {
+      if (forcedPathRoll === 0) {
+        pathType = 'Stable';
+        costMultiplier = 0.3 + rand() * 0.3;
+        yieldMultiplier = (0.4 + tamerBonus) + rand() * 0.3;
+        // Mutator 1: Black Hole makes stable nodes 0.1x cost
+        if (activeChallenge === 'black_hole') costMultiplier *= 0.1;
+      } else if (forcedPathRoll === 1) {
+        pathType = 'Heavy';
+        costMultiplier = 3.0 + rand() * 2.0;
+        yieldMultiplier = (2.5 + tamerBonus) + rand() * 2.0;
+      } else {
+        pathType = 'Volatile';
+        costMultiplier = 0.5 + rand() * 5.5;
+        // Mutator 2: Solar Flare triples volatile jackpot ranges
+        const jackpotMultiplier = activeChallenge === 'solar_flare' ? 3.0 : 1.0;
+        yieldMultiplier = (0.1 + tamerBonus) + rand() * 4.9 * jackpotMultiplier;
+      }
+    }
+
+    // Apply Cost multipliers, Reductions, and Tech Synergy Cost Breaks
+    let factionCostBonus = 1.0;
+    if (prestigeModifiers.techSynergyActive && pathType === 'Heavy') {
+      factionCostBonus = 0.70; // 30% cost reduction for Heavy nodes with Tech synergy
+    }
+
+    const costAfterReduction = rawCost * costMultiplier * (1 - costReduction) * factionCostBonus;
+    const cost = Math.max(1, Math.floor(costAfterReduction));
+
+    // Power-Law sub-linear Yield decay
+    const baseYieldPower = 0.42; 
+    let structuralYield = Math.pow(rawCost, baseYieldPower) * 0.65;
+
+    // Mutator 3: Cold Space reduces baseline yields by 90%
+    if (activeChallenge === 'cold_space') {
+      structuralYield *= 0.10;
+    }
+
+    // Apply Bio synergy yield multiplier
+    let factionYieldBonus = 1.0;
+    if (prestigeModifiers.bioSynergyActive && pathType === 'Stable') {
+      factionYieldBonus = 1.5; // +50% Yield to Stable nodes
+    }
+
+    let finalYield = Math.max(1, Math.floor(structuralYield * yieldMultiplier * factionYieldBonus));
+
+    // Apply Cosmic synergy jackpot multiplication
+    const paybackPeriod = cost / finalYield;
+    let isGodRoll = paybackPeriod < 6;      
+    let isDud = paybackPeriod > 45 && depth > 1; 
+
+    if (prestigeModifiers.cosmicSynergyActive && isGodRoll && pathType === 'Volatile') {
+      finalYield *= 3; // Triple yield on Cosmic Jackpot Volatiles
+    }
+
+    const prefixes = {
+      Tech: ['Quantum', 'Plasma', 'Hyper', 'Cyber', 'Silicon'],
+      Bio: ['Neural', 'Nano', 'Organic', 'Genetic', 'Biotic'],
+      Cosmic: ['Astral', 'Nebula', 'Chronos', 'Void', 'Galaxy']
+    };
+    const nouns = ['Matrix', 'Core', 'Forge', 'Siphon', 'Conduit', 'Node', 'Catalyst'];
+    
+    const pfxArray = prefixes[faction] || prefixes['Tech'];
+    const name = `[${pathType}] ${pfxArray[Math.floor(rand() * pfxArray.length)]} ${nouns[Math.floor(rand() * nouns.length)]}`;
+
+    choices.push({
+      id: `${depth}-${paths[i]}`,
+      depth,
+      name,
+      cost,
+      yield: finalYield,
+      pathType,
+      faction,
+      isGodRoll,
+      isDud,
+    });
+  }
+
+  return choices;
+}
+
+// ============================================================================
+// 📁 STATICS & UPGRADE CONFIGURATIONS
+// ============================================================================
+
+export const UPGRADE_TREE = {
+  root: {
+    id: 'root',
+    name: 'Quantum Core',
+    desc: 'Unlocks fundamental physics. +20% income generation.',
+    cost: 1,
+    parents: [],
+    effects: { globalMultiplier: 1.2 },
+    tier: 0,
+    color: '#38BDF8',
+  },
+  mult1: {
+    id: 'mult1',
+    name: 'Hyper-Threading',
+    desc: 'Doubles all baseline income gains (2x multiplier).',
+    cost: 5,
+    parents: ['root'],
+    effects: { globalMultiplier: 2.0 },
+    tier: 1,
+    color: '#818CF8',
+  },
+  cost1: {
+    id: 'cost1',
+    name: 'Sub-Space Pricing',
+    desc: 'Reduces all node discovery costs by 15%.',
+    cost: 8,
+    parents: ['root'],
+    effects: { costReduction: 0.15 },
+    tier: 1,
+    color: '#F472B6',
+  },
+  mult2: {
+    id: 'mult2',
+    name: 'Cluster Overclock',
+    desc: 'Additional 2x multiplier (stacks multiplicatively).',
+    cost: 15,
+    parents: ['mult1'],
+    effects: { globalMultiplier: 2.0 },
+    tier: 2,
+    color: '#34D399',
+  },
+  dampener1: {
+    id: 'dampener1',
+    name: 'Logarithmic Dampener',
+    desc: 'Slightly reduces exponent scaling speed.',
+    cost: 25,
+    parents: ['cost1'],
+    effects: { exponentDampener: 1 },
+    tier: 2,
+    color: '#FBBF24',
+  },
+  variance1: {
+    id: 'variance1',
+    name: 'Stochastic Alignment',
+    desc: 'Raises lowest possible random rolls by 20%.',
+    cost: 40,
+    parents: ['mult2'],
+    effects: { varianceTamer: 1 },
+    tier: 3,
+    color: '#A78BFA',
+  },
+  dampener2: {
+    id: 'dampener2',
+    name: 'Dimensional Flattening',
+    desc: 'Strongly reduces exponent scaling speed.',
+    cost: 75,
+    parents: ['dampener1'],
+    effects: { exponentDampener: 2 },
+    tier: 3,
+    color: '#EF4444',
+  },
+  omega: {
+    id: 'omega',
+    name: 'Singularity Catalyst',
+    desc: 'Ultimate modifier. 5x income. Requires both tree branches.',
+    cost: 150,
+    parents: ['variance1', 'dampener2'],
+    effects: { globalMultiplier: 5.0 },
+    tier: 4,
+    color: '#EC4899',
+  },
+  dm_unlock: {
+    id: 'dm_unlock',
+    name: 'Dark Matter Resonance',
+    desc: 'Unlocks the permanent Dark Matter Mine sector and enables automated Harvester placements.',
+    cost: 120,
+    parents: ['omega'],
+    effects: { dmUnlocked: true },
+    tier: 5,
+    color: '#BB9AF3'
+  }
+};
+
+export const CHALLENGES = [
+  {
+    id: 'black_hole',
+    name: 'The Black Hole',
+    desc: 'Cost scaling exponents are doubled. Stable nodes cost 0.1x.',
+    badge: '⚫'
+  },
+  {
+    id: 'solar_flare',
+    name: 'Solar Flare Cosmic Leak',
+    desc: 'Volatile nodes have 3x jackpot margins. Heavy nodes are disabled.',
+    badge: '☀️'
+  },
+  {
+    id: 'cold_space',
+    name: 'Absolute Zero / Cold Space',
+    desc: 'Base credit yields are cut by 90%. Prestige Token payouts are cubed (Depth³).',
+    badge: '❄️'
+  }
+];
+
+// ============================================================================
+// 🌐 GLOBAL STATE CONTEXT & GAME PROVIDER
+// ============================================================================
+
+export const GameContext = createContext();
+
+export const GameProvider = ({ children }) => {
+  const [gameSpeed, setGameSpeed] = useState(1);
+
+  // Core progression currencies & stats
+  const [currency, setCurrency] = useState(10);
+  const [incomePerSecond, setIncomePerSecond] = useState(0); 
+  const [prestigeTokens, setPrestigeTokens] = useState(0);
+  const [currentDepth, setCurrentDepth] = useState(0);
+  const [runSeed, setRunSeed] = useState(Math.floor(Math.random() * 1000000));
+  const [activeChallenge, setActiveChallenge] = useState(null);
+
+  // Horizontal system: Auto-miners / Dark Matter
+  const [darkMatter, setDarkMatter] = useState(0);
+  const [darkMatterHarvesters, setDarkMatterHarvesters] = useState(0);
+  const [autoBuyerActive, setAutoBuyerActive] = useState(false);
+  const [autoBuyerInterval, setAutoBuyerInterval] = useState(10); // in seconds
+  const [harvesterMultiplier, setHarvesterMultiplier] = useState(1.0);
+
+  // Singularity Hyper-Prestige layer
+  const [singularityShards, setSingularityShards] = useState(0);
+  const [seedLockerSeed, setSeedLockerSeed] = useState(null);
+  const [isSeedLocked, setIsSeedLocked] = useState(false);
+  const [unlockedSingularityUpgrades, setUnlockedSingularityUpgrades] = useState([]);
+
+  // Active faction-synergy mapping
+  const [activeRunFactions, setActiveRunFactions] = useState([]);
+
+  // Purchased standard upgrades (Prestige Tree)
+  const [purchasedNodes, setPurchasedNodes] = useState([]);
+
+  // Random anomaly tracker state
+  const [activeAnomaly, setActiveAnomaly] = useState(null);
+
+  // Track standard elapsed seconds for sub-second automation timers
+  const [secondTickCount, setSecondTickCount] = useState(0);
+
+  // Track depths where player has explicitly skipped harvester creation
+  const [skippedHarvesterDepths, setSkippedHarvesterDepths] = useState([]);
+
+  // Native UI Console Logging state
+  const [consoleLog, setConsoleLog] = useState("OPERATIONAL MATRIX INITIATED.");
+
+  // Check if DM Mine has been unlocked in the Lab (Tier 5)
+  const isDMMineUnlocked = useMemo(() => {
+    return purchasedNodes.includes('dm_unlock');
+  }, [purchasedNodes]);
+
+  // Dynamic Modifiers Calculator
+  const activeModifiers = useMemo(() => {
+    let mods = {
+      globalMultiplier: 1.0,
+      costReduction: 0.0,
+      exponentDampener: 0,
+      varianceTamer: 0,
+      techSynergyActive: false,
+      bioSynergyActive: false,
+      cosmicSynergyActive: false,
+    };
+
+    // Apply standard upgrade tree effects
+    purchasedNodes.forEach(nodeId => {
+      const upgrade = UPGRADE_TREE[nodeId];
+      if (upgrade && upgrade.effects) {
+        if (upgrade.effects.globalMultiplier) mods.globalMultiplier *= upgrade.effects.globalMultiplier;
+        if (upgrade.effects.costReduction) mods.costReduction += upgrade.effects.costReduction;
+        if (upgrade.effects.exponentDampener) mods.exponentDampener += upgrade.effects.exponentDampener;
+        if (upgrade.effects.varianceTamer) mods.varianceTamer += upgrade.effects.varianceTamer;
+      }
+    });
+
+    // Apply Singularity Lab absolute bonuses
+    if (unlockedSingularityUpgrades.includes('universal_catalyst')) {
+      mods.globalMultiplier *= 2.0; 
+    }
+
+    // Apply active node faction synergies
+    const counts = activeRunFactions.reduce((acc, f) => {
+      acc[f] = (acc[f] || 0) + 1;
+      return acc;
+    }, {});
+
+    if ((counts['Tech'] || 0) >= 3) mods.techSynergyActive = true;
+    if ((counts['Bio'] || 0) >= 3) mods.bioSynergyActive = true;
+    if ((counts['Cosmic'] || 0) >= 3) mods.cosmicSynergyActive = true;
+
+    return mods;
+  }, [purchasedNodes, unlockedSingularityUpgrades, activeRunFactions]);
+
+  // Determine if next depth generates a solo Harvester Node
+  const isNextDepthHarvester = useMemo(() => {
+    const nextDepth = currentDepth + 1;
+    if (!isDMMineUnlocked || nextDepth < 15 || skippedHarvesterDepths.includes(nextDepth)) {
+      return false;
+    }
+    // Seeded random roll to determine deterministic placement from Depth 15 and later
+    const rand = seededRandom(runSeed + nextDepth * 888);
+    return rand() < 0.25; // 25% chance of harvester node above depth 15
+  }, [isDMMineUnlocked, currentDepth, skippedHarvesterDepths, runSeed]);
+
+  // Memoized choices wrapper that enforces solo Harvester placement or normal generator rules
+  const currentChoices = useMemo(() => {
+    const nextDepth = currentDepth + 1;
+
+    if (isNextDepthHarvester) {
+      // Calculate scaled credit cost
+      const rawCost = Math.floor(10 * Math.pow(2.3 + (0.22 * Math.floor(nextDepth / 3)), nextDepth - 1));
+      const cost = Math.max(10, Math.floor(rawCost * 0.45)); // Balanced cost reduction factor
+
+      return [{
+        id: `${nextDepth}-Harvester-Node`,
+        depth: nextDepth,
+        name: "💎 Permanent DM Harvester",
+        cost: cost,
+        yield: 0.1, // permanent yield of 0.1 DM/s
+        pathType: 'Milestone',
+        faction: 'Cosmic',
+        isHarvester: true
+      }];
+    }
+
+    return generateNodeChoices(nextDepth, runSeed, activeModifiers, activeChallenge);
+  }, [currentDepth, runSeed, activeModifiers, activeChallenge, isNextDepthHarvester]);
+
+  // ============================================================================
+  // 🎮 ACTIONS & STATE TRIGGER CONTROLLERS (useCallback formatted)
+  // ============================================================================
+
+  const expandNode = useCallback((chosenNode) => {
+    if (currency >= chosenNode.cost) {
+      setCurrency(prev => prev - chosenNode.cost);
+      setCurrentDepth(prev => prev + 1);
+      
+      if (chosenNode.isHarvester) {
+        setDarkMatterHarvesters(prev => prev + 1);
+        setConsoleLog(`EXPANDED: Harvester Unit Online. Depth: ${currentDepth + 1}`);
+      } else {
+        setIncomePerSecond(prev => prev + chosenNode.yield);
+        setActiveRunFactions(prev => [...prev, chosenNode.faction]);
+        setConsoleLog(`EXPANDED: ${chosenNode.name}. Depth: ${currentDepth + 1}`);
+      }
+    }
+  }, [currency, currentDepth]);
+
+  const skipHarvester = useCallback(() => {
+    const nextDepth = currentDepth + 1;
+    setSkippedHarvesterDepths(prev => [...prev, nextDepth]);
+    setConsoleLog(`SKIPPED: Harvester placement bypass complete.`);
+  }, [currentDepth]);
+
+  const triggerPrestige = useCallback((selectedChallengeId = null) => {
+    let earnedTokens = 0;
+    if (activeChallenge === 'cold_space') {
+      earnedTokens = Math.floor(Math.pow(currentDepth / 3, 3));
+    } else {
+      earnedTokens = Math.floor(Math.pow(currentDepth / 3, 2));
+    }
+
+    setPrestigeTokens(prev => prev + earnedTokens);
+    
+    setCurrency(10);
+    setIncomePerSecond(0);
+    setCurrentDepth(0);
+    setActiveRunFactions([]);
+    setSkippedHarvesterDepths([]);
+
+    if (!isSeedLocked) {
+      setRunSeed(Math.floor(Math.random() * 1000000)); 
+    }
+
+    setActiveChallenge(selectedChallengeId);
+    setConsoleLog(`TIMELINE WIPE: Claimed +${earnedTokens} Tokens.`);
+  }, [activeChallenge, currentDepth, isSeedLocked]);
+
+  const triggerDimensionalCollapse = useCallback(() => {
+    if (currentDepth < 50) return;
+
+    const earnedShards = 1 + Math.floor((currentDepth - 50) / 5);
+    setSingularityShards(prev => prev + earnedShards);
+
+    setCurrency(10);
+    setIncomePerSecond(0);
+    setCurrentDepth(0);
+    setPrestigeTokens(0);
+    setPurchasedNodes([]); 
+    setActiveRunFactions([]);
+    setSkippedHarvesterDepths([]);
+    setActiveChallenge(null);
+
+    setRunSeed(Math.floor(Math.random() * 1000000));
+    setConsoleLog(`SHRINE COLLAPSE: Obtained +${earnedShards} Shards.`);
+  }, [currentDepth]);
+
+  const buyUpgradeNode = useCallback((nodeId) => {
+    const node = UPGRADE_TREE[nodeId];
+    if (!node) return;
+
+    const isUnlocked = node.parents.length === 0 || node.parents.some(p => purchasedNodes.includes(p));
+    
+    if (isUnlocked && !purchasedNodes.includes(nodeId) && prestigeTokens >= node.cost) {
+      setPrestigeTokens(prev => prev - node.cost);
+      setPurchasedNodes(prev => [...prev, nodeId]);
+      setConsoleLog(`LAB PURCHASE: Activated ${node.name}.`);
+    }
+  }, [purchasedNodes, prestigeTokens]);
+
+  const buySingularityUpgrade = useCallback((id, cost) => {
+    if (!unlockedSingularityUpgrades.includes(id) && singularityShards >= cost) {
+      setSingularityShards(prev => prev - cost);
+      setUnlockedSingularityUpgrades(prev => [...prev, id]);
+      setConsoleLog(`SHIELD PURCHASE: Activated ${id}.`);
+    }
+  }, [unlockedSingularityUpgrades, singularityShards]);
+
+  const tapAnomaly = useCallback(() => {
+    if (!activeAnomaly) return;
+    if (activeAnomaly.type === 'leak') {
+      const currentIPS = incomePerSecond * activeModifiers.globalMultiplier;
+      const bonus = currentIPS * 300;
+      setCurrency(prev => prev + bonus);
+      setConsoleLog(`ANOMALY EXTRACTION: Obtained +${Math.floor(bonus)} Credits.`);
+    }
+    setActiveAnomaly(null); 
+  }, [activeAnomaly, incomePerSecond, activeModifiers.globalMultiplier]);
+
+  const buyDMUpgrade = useCallback((type) => {
+    // Starting DM upgrade costs increased x10 (previously 5, 8, 15 now 50, 80, 150)
+    if (type === 'autobuy_unlock' && darkMatter >= 50 && !autoBuyerActive) {
+      setDarkMatter(prev => prev - 50);
+      setAutoBuyerActive(true);
+      setConsoleLog("ROUTINE LOADED: Automated expansion buyer activated.");
+    } else if (type === 'autobuy_speed' && darkMatter >= 80) {
+      setDarkMatter(prev => prev - 80);
+      // Frequency Overclocker now reduces the buyer interval by 0.5s instead of 2.0s
+      setAutoBuyerInterval(prev => Math.max(1, prev - 0.5)); 
+      setConsoleLog("OVERCLOCK: Auto-buyer scanning rates elevated.");
+    } else if (type === 'harvester_efficiency' && darkMatter >= 150) {
+      setDarkMatter(prev => prev - 150);
+      setHarvesterMultiplier(prev => prev + 0.5); 
+      setConsoleLog("OVERCHARGE: Harvester yield capacity increased +50%.");
+    }
+  }, [darkMatter, autoBuyerActive]);
+
+  const simulateOfflineProgress = useCallback((hours) => {
+    const seconds = hours * 3600;
+    const currentIPS = incomePerSecond * activeModifiers.globalMultiplier;
+    
+    const offlineGain = currentIPS * seconds;
+    setCurrency(prev => prev + offlineGain);
+
+    if (darkMatterHarvesters > 0) {
+      const dmGain = 0.1 * darkMatterHarvesters * harvesterMultiplier * seconds;
+      setDarkMatter(prev => prev + dmGain);
+    }
+    setConsoleLog(`WARPED SYSTEM: Simulating ${hours} hrs offline progression.`);
+  }, [incomePerSecond, activeModifiers.globalMultiplier, darkMatterHarvesters, harvesterMultiplier]);
+
+  // ============================================================================
+  // ⚙️ LOOP ENGINES: TICK TIMER & GAME RUNTIME
+  // ============================================================================
+
+  useEffect(() => {
+    const tickRate = 1000 / gameSpeed;
+    const timer = setInterval(() => {
+      // 1. Calculate and credit Income
+      let currentIPS = incomePerSecond * activeModifiers.globalMultiplier;
+
+      // Check for active "Quantum Flux" Anomaly (+300% / 4x multiplier)
+      if (activeAnomaly && activeAnomaly.type === 'flux') {
+        currentIPS *= 4.0;
+      }
+
+      setCurrency(prev => prev + currentIPS);
+
+      // 2. Tick Dark Matter Auto-miners (Ticking DM continuously)
+      if (darkMatterHarvesters > 0) {
+        const dmpTick = 0.1 * darkMatterHarvesters * harvesterMultiplier;
+        setDarkMatter(prev => prev + dmpTick);
+      }
+
+      // 3. Increment elapsed seconds
+      setSecondTickCount(prev => prev + 1);
+
+      // 4. Anomaly Tick down logic
+      setActiveAnomaly(current => {
+        if (!current) return null;
+        if (current.expiry <= Date.now()) {
+          setConsoleLog("ANOMALY RESOLVED: Signal dissolved.");
+          return null; 
+        }
+        return current;
+      });
+
+    }, tickRate);
+
+    return () => clearInterval(timer);
+  }, [incomePerSecond, activeModifiers.globalMultiplier, gameSpeed, darkMatterHarvesters, harvesterMultiplier, activeAnomaly]);
+
+  // Handle Auto-Buyer loop
+  useEffect(() => {
+    if (!autoBuyerActive) return;
+
+    // Check on every interval trigger
+    if (secondTickCount > 0 && secondTickCount % Math.ceil(autoBuyerInterval) === 0) {
+      const affordable = currentChoices.filter(n => currency >= n.cost);
+      if (affordable.length > 0) {
+        // Chronos Auto-Buyer is programmed to purchase the best variance options:
+        // Priority: Volatile (High variance/potential) > Heavy > Stable > Harvesters
+        affordable.sort((a, b) => {
+          const priority = { 'Volatile': 4, 'Heavy': 3, 'Stable': 2, 'Milestone': 1 };
+          const pA = priority[a.pathType] || 0;
+          const pB = priority[b.pathType] || 0;
+          
+          if (pB !== pA) return pB - pA; // Prioritize high-variance path types
+          return b.yield - a.yield;     // Secondarily buy node with higher throughput
+        });
+        expandNode(affordable[0]);
+      }
+    }
+  }, [secondTickCount, autoBuyerActive, autoBuyerInterval, currentChoices, currency, expandNode]);
+
+  // Randomly roll an Anomaly Event every 15 seconds
+  useEffect(() => {
+    const rollInterval = setInterval(() => {
+      if (activeAnomaly) return; 
+
+      const roll = Math.random();
+      if (roll < 0.35) {
+        const isFlux = Math.random() > 0.4;
+        if (isFlux) {
+          setActiveAnomaly({
+            type: 'flux',
+            title: '⚠️ QUANTUM FLUX',
+            desc: '+300% Passive production overcharges unlocked.',
+            expiry: Date.now() + 20000,
+          });
+          setConsoleLog("WARNING: High-frequency signal fluctuation detected.");
+        } else {
+          setActiveAnomaly({
+            type: 'leak',
+            title: '⚡ CHRONOS LEAK',
+            desc: 'Tap extraction capsule to obtain 5m passive credits.',
+            expiry: Date.now() + 15000,
+          });
+          setConsoleLog("WARNING: Space-time boundary leakage registered.");
+        }
+      }
+    }, 15000 / gameSpeed);
+
+    return () => clearInterval(rollInterval);
+  }, [activeAnomaly, gameSpeed]);
+
+  return (
+    <GameContext.Provider value={{
+      currency, incomePerSecond, prestigeTokens, currentDepth, currentChoices, purchasedNodes, activeModifiers,
+      darkMatter, darkMatterHarvesters, autoBuyerActive, autoBuyerInterval, harvesterMultiplier,
+      singularityShards, unlockedSingularityUpgrades, activeChallenge, activeAnomaly, activeRunFactions, gameSpeed,
+      isDMMineUnlocked, isNextDepthHarvester, setGameSpeed, expandNode, triggerPrestige, 
+      triggerDimensionalCollapse, buyUpgradeNode, buySingularityUpgrade, buyDMUpgrade, tapAnomaly, 
+      simulateOfflineProgress, isSeedLocked, setIsSeedLocked, runSeed, skipHarvester, consoleLog
+    }}>
+      {children}
+    </GameContext.Provider>
+  );
+};
+
+// ============================================================================
+// SVG ICONS DICTIONARY FOR HIGH PERFORMANCE GRAPHICS
+// ============================================================================
+
+const SvgIcon = ({ name, className = "w-5 h-5" }) => {
+  const icons = {
+    atom: (
+      <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 9h-1m14.071 8.071l-.707-.707m-9.9 0l-.707.707M17.071 5.93l-.707.707m-9.9-9.9l-.707-.707M12 12a4 4 0 100-8 4 4 0 000 8z" />
+      </svg>
+    ),
+    console: (
+      <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M8 9l3 3-3 3m5 0h3M5 20h14a2 2 0 002-2V6a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+      </svg>
+    ),
+    speed: (
+      <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+      </svg>
+    ),
+    map: (
+      <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
+      </svg>
+    ),
+    lab: (
+      <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M19.428 15.428a2 2 0 00-1.022-.547l-2.387-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" />
+      </svg>
+    ),
+    miner: (
+      <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+      </svg>
+    ),
+    shrine: (
+      <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M5 3v4M3 5h4M6 17v4m-2-2h4m5-16l2.286 6.857L21 12l-5.714 2.143L13 21l-2.286-6.857L5 12l5.714-2.143L13 3z" />
+      </svg>
+    ),
+    lock: (
+      <svg className={className} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+      </svg>
+    )
+  };
+
+  return icons[name] || icons.atom;
+};
+
+// ============================================================================
+// 🖥️ COMPONENT VIEW: RESPONSIVE DASHBOARD SCREEN
+// ============================================================================
+
+function GameScreen() {
+  const { 
+    currency, incomePerSecond, prestigeTokens, currentDepth, currentChoices, purchasedNodes, activeModifiers,
+    darkMatter, darkMatterHarvesters, autoBuyerActive, autoBuyerInterval, harvesterMultiplier,
+    singularityShards, unlockedSingularityUpgrades, activeChallenge, activeAnomaly, activeRunFactions, gameSpeed,
+    isDMMineUnlocked, isNextDepthHarvester, setGameSpeed, expandNode, triggerPrestige, 
+    triggerDimensionalCollapse, buyUpgradeNode, buySingularityUpgrade, buyDMUpgrade, tapAnomaly, 
+    simulateOfflineProgress, isSeedLocked, setIsSeedLocked, runSeed, skipHarvester, consoleLog
+  } = useContext(GameContext);
+
+  const [activeTab, setActiveTab] = useState('expansion'); 
+
+  const effectiveIPS = Math.floor(incomePerSecond * activeModifiers.globalMultiplier);
+  const displayIPS = activeAnomaly && activeAnomaly.type === 'flux' ? effectiveIPS * 4 : effectiveIPS;
+
+  const tiers = [0, 1, 2, 3, 4, 5];
+
+  const techCount = activeRunFactions.filter(f => f === 'Tech').length;
+  const bioCount = activeRunFactions.filter(f => f === 'Bio').length;
+  const cosmicCount = activeRunFactions.filter(f => f === 'Cosmic').length;
+
+  return (
+    <div className="flex flex-col min-h-screen bg-[#0A0B10] text-slate-100 font-sans antialiased relative">
+      
+      {/* 🔮 EMBEDDED HIGH-FIDELITY CSS OVERLAYS FOR RELIABLE CUSTOM LAYOUT STYLING */}
+      <style>{`
+        @keyframes customFadeIn {
+          from { opacity: 0; transform: translateY(8px); }
+          to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes neonPulse {
+          0%, 100% { border-color: rgba(56, 189, 248, 0.4); box-shadow: 0 0 10px rgba(56, 189, 248, 0.15); }
+          50% { border-color: rgba(56, 189, 248, 0.9); box-shadow: 0 0 20px rgba(56, 189, 248, 0.35); }
+        }
+        @keyframes goldPulse {
+          0%, 100% { border-color: rgba(158, 206, 106, 0.4); box-shadow: 0 0 10px rgba(158, 206, 106, 0.15); }
+          50% { border-color: rgba(158, 206, 106, 0.9); box-shadow: 0 0 20px rgba(158, 206, 106, 0.35); }
+        }
+        @keyframes volatilePulse {
+          0%, 100% { border-color: rgba(244, 114, 182, 0.3); }
+          50% { border-color: rgba(244, 114, 182, 0.85); box-shadow: 0 0 15px rgba(244, 114, 182, 0.25); }
+        }
+        @keyframes corruptPulse {
+          0%, 100% { background-color: rgba(153, 27, 27, 0.3); border-color: rgba(239, 68, 68, 0.4); }
+          50% { background-color: rgba(153, 27, 27, 0.5); border-color: rgba(239, 68, 68, 0.8); }
+        }
+        .animate-fade-in {
+          animation: customFadeIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+        }
+        .neon-pulse {
+          animation: neonPulse 2s infinite ease-in-out;
+        }
+        .gold-pulse {
+          animation: goldPulse 2s infinite ease-in-out;
+        }
+        .volatile-pulse {
+          animation: volatilePulse 1.5s infinite ease-in-out;
+        }
+        .corrupt-pulse {
+          animation: corruptPulse 1.5s infinite ease-in-out;
+        }
+        .sci-fi-grid {
+          background-size: 40px 40px;
+          background-image: linear-gradient(to right, rgba(32, 38, 58, 0.35) 1px, transparent 1px),
+                            linear-gradient(to bottom, rgba(32, 38, 58, 0.35) 1px, transparent 1px);
+        }
+        .glass-panel {
+          background: rgba(17, 19, 30, 0.85);
+          backdrop-filter: blur(12px);
+          -webkit-backdrop-filter: blur(12px);
+        }
+      `}</style>
+
+      {/* BACKGROUND SCI-FI DESIGN OVERLAY */}
+      <div className="absolute inset-0 sci-fi-grid pointer-events-none z-0" />
+
+      {/* 📡 HEADER: METRIC DASHBOARD */}
+      <header className="p-4 glass-panel border-b border-[#242940] flex flex-col gap-y-3 z-10 sticky top-0 shadow-lg shadow-[#000000]/50">
+        <div className="flex flex-row justify-between items-center flex-wrap gap-2">
+          <div className="flex items-center gap-x-2.5">
+            <span className="text-[#38BDF8] text-2xl animate-pulse">🌌</span>
+            <div>
+              <h1 className="text-white text-base font-black tracking-widest uppercase mb-0.5">ANOMALY SYSTEM</h1>
+              <p className="text-[9px] text-slate-400 font-bold uppercase tracking-widest leading-none">Generative Procedural Engine v4.2</p>
+            </div>
+          </div>
+          <div className="flex flex-row gap-x-2 items-center bg-[#161a2b] p-1.5 rounded-lg border border-[#242940]">
+            <span className="text-slate-400 text-[9px] tracking-wider font-extrabold pr-1 flex items-center gap-1">
+              <SvgIcon name="speed" className="w-3.5 h-3.5 text-slate-400" /> WARP SPEED:
+            </span>
+            {[1, 5, 10].map((s) => (
+              <button 
+                key={s} 
+                onClick={() => setGameSpeed(s)} 
+                className={`px-3 py-1.5 rounded-md transition-all duration-200 font-extrabold text-[10px] tracking-widest ${
+                  gameSpeed === s 
+                    ? 'bg-[#38BDF8] text-black shadow-md shadow-[#38bdf8]/20' 
+                    : 'bg-[#202436] hover:bg-[#2c314a] text-slate-300 hover:text-white'
+                }`}
+              >
+                {s}x
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* ACTIVE CONSOLE SYSTEM FEEDBACK LOG */}
+        <div className="bg-[#06070B] border border-[#242940] p-2 rounded-md flex items-center text-[#9ECE6A] font-mono text-[10px] gap-2">
+          <SvgIcon name="console" className="w-3.5 h-3.5 text-[#9ECE6A] animate-pulse" />
+          <span className="flex-1 uppercase truncate">{consoleLog}</span>
+        </div>
+
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 bg-[#0a0b10]/85 p-3 rounded-lg border border-[#1f243c]">
+          <div>
+            <p className="text-slate-400 text-[9px] uppercase font-bold tracking-widest">💰 Credits</p>
+            <p className="text-2xl font-black text-[#E0AF68] tracking-tight">{Math.floor(currency).toLocaleString()}</p>
+          </div>
+          <div>
+            <p className="text-slate-400 text-[9px] uppercase font-bold tracking-widest">⚙️ Net IPS</p>
+            <p className="text-2xl font-black text-[#9ECE6A] tracking-tight">+{displayIPS.toLocaleString()}/s</p>
+          </div>
+          <div>
+            <p className="text-slate-400 text-[9px] uppercase font-bold tracking-widest">✨ Tokens</p>
+            <p className="text-2xl font-black text-[#BB9AF3] tracking-tight">{prestigeTokens.toLocaleString()}</p>
+          </div>
+          <div>
+            <p className="text-slate-400 text-[9px] uppercase font-bold tracking-widest">🛡️ Shards</p>
+            <p className="text-2xl font-black text-[#EC4899] tracking-tight">{singularityShards.toLocaleString()}</p>
+          </div>
+        </div>
+
+        {/* ACTIVE FACTION SYNERGY CHIPS */}
+        <div className="flex flex-row flex-wrap gap-2 pt-1">
+          <div className={`px-2.5 py-1.5 rounded-md bg-[#161a2b] border text-[9px] tracking-widest font-extrabold transition-all duration-300 ${activeModifiers.techSynergyActive ? 'border-cyan-400 text-cyan-300 bg-cyan-950/35 shadow-sm shadow-cyan-400/20' : 'border-slate-800 text-slate-500'}`}>
+            ⚙️ TECH MATRIX: {techCount}/3 {activeModifiers.techSynergyActive ? '✓ [ACTIVE]' : ''}
+          </div>
+          <div className={`px-2.5 py-1.5 rounded-md bg-[#161a2b] border text-[9px] tracking-widest font-extrabold transition-all duration-300 ${activeModifiers.bioSynergyActive ? 'border-emerald-400 text-emerald-300 bg-emerald-950/35 shadow-sm shadow-emerald-400/20' : 'border-slate-800 text-slate-500'}`}>
+            🧬 BIO SYNAPSE: {bioCount}/3 {activeModifiers.bioSynergyActive ? '✓ [ACTIVE]' : ''}
+          </div>
+          <div className={`px-2.5 py-1.5 rounded-md bg-[#161a2b] border text-[9px] tracking-widest font-extrabold transition-all duration-300 ${activeModifiers.cosmicSynergyActive ? 'border-pink-400 text-pink-300 bg-pink-950/35 shadow-sm shadow-pink-400/20' : 'border-slate-800 text-slate-500'}`}>
+            ✨ COSMIC COIL: {cosmicCount}/3 {activeModifiers.cosmicSynergyActive ? '✓ [ACTIVE]' : ''}
+          </div>
+          {activeChallenge && (
+            <div className="px-2.5 py-1.5 rounded-md border text-[9px] text-red-400 font-extrabold tracking-widest corrupt-pulse">
+              🚨 CHALLENGE MUTATOR: ACTIVE
+            </div>
+          )}
+        </div>
+      </header>
+
+      {/* 🔔 CLICKABLE ACTIVE ANOMALIES VIEW */}
+      {activeAnomaly && (
+        <div className="px-4 py-3 bg-[#0A0B10]/90 border-b border-[#242940]/50 z-10">
+          <div 
+            onClick={tapAnomaly}
+            className={`cursor-pointer p-4 rounded-lg border flex flex-row items-center justify-between transition-all duration-200 transform hover:scale-[1.01] ${
+              activeAnomaly.type === 'flux' 
+                ? 'bg-[#1E1B4B] border-indigo-500 hover:border-indigo-400 shadow-md shadow-indigo-500/20' 
+                : 'bg-red-950/80 border-red-500 hover:border-red-400 shadow-md shadow-red-500/20'
+            }`}
+          >
+            <div className="flex-1 pr-4">
+              <h4 className="text-white font-black text-sm tracking-wide uppercase flex items-center gap-1.5">
+                <span>{activeAnomaly.type === 'flux' ? '⚡' : '🔮'}</span> {activeAnomaly.title}
+              </h4>
+              <p className="text-slate-300 text-xs mt-1 leading-relaxed">{activeAnomaly.desc}</p>
+            </div>
+            <span className="px-3 py-1.5 rounded-md bg-white text-black font-black text-xs tracking-widest uppercase shadow-lg hover:bg-slate-100 transition-colors">
+              {activeAnomaly.type === 'flux' ? 'STABILIZING' : 'EXTRACT'}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* 📑 TAB CONTROLS NAVIGATION BAR */}
+      <nav className="flex bg-[#11131E] border-b border-[#242940] sticky top-0 z-10 shadow-md">
+        {[
+          { id: 'expansion', label: 'Sector Map', icon: 'map' },
+          { id: 'upgrades', label: 'Prestige Lab', icon: 'lab' },
+          { id: 'autominer', label: 'DM Auto-Miners', icon: 'miner' },
+          { id: 'singularity', label: 'Singularity Shrines', icon: 'shrine' }
+        ].map((tab) => (
+          <button 
+            key={tab.id} 
+            onClick={() => setActiveTab(tab.id)} 
+            className={`flex-1 py-4 px-1 text-center border-b-2 font-black text-[10px] md:text-xs uppercase tracking-wider transition-all duration-150 flex items-center justify-center gap-1.5 ${
+              activeTab === tab.id 
+                ? 'border-[#38BDF8] text-white bg-[#161a2c]/60 shadow-inner' 
+                : 'border-transparent text-slate-500 hover:text-slate-300 hover:bg-[#11131e]/50'
+            }`}
+          >
+            <SvgIcon name={tab.icon} className={`w-4 h-4 ${activeTab === tab.id ? 'text-[#38BDF8]' : 'text-slate-500'}`} />
+            <span>{tab.label}</span>
+          </button>
+        ))}
+      </nav>
+
+      {/* 📱 ACTIVE SCREEN PANEL CONTROLLER */}
+      <main className="flex-1 p-4 md:p-6 max-w-6xl mx-auto w-full z-10">
+        
+        {/* PANEL A: BRANCH EXPANSION LAYOUT */}
+        {activeTab === 'expansion' && (
+          <div className="animate-fade-in space-y-6">
+            <div className="flex flex-row justify-between items-center flex-wrap gap-2">
+              <div>
+                <h2 className="text-[#38BDF8] text-[10px] font-extrabold tracking-widest uppercase mb-1">
+                  Universe Core Sectors
+                </h2>
+                <p className="text-slate-400 text-xs">Explore alternative timelines and harvest raw power metrics at current depth.</p>
+              </div>
+              <div className="text-slate-500 text-[10px] bg-[#11131e] border border-[#242940] px-3 py-1.5 rounded-md font-mono">
+                DEPTH: <span className="text-[#38BDF8] font-black">#{currentDepth}</span> | SEED: <span className="text-slate-300">{runSeed}</span>
+              </div>
+            </div>
+
+            {/* SOLO HARVESTER SPECIAL INTERACTION WRAPPER */}
+            {isNextDepthHarvester ? (
+              <div className="max-w-xl mx-auto p-6 rounded-2xl border-2 border-indigo-500/80 bg-[#131122] shadow-2xl text-center space-y-5 animate-fade-in">
+                <div className="space-y-2">
+                  <span className="text-5xl inline-block animate-pulse">💎</span>
+                  <p className="text-indigo-400 font-extrabold text-[10px] tracking-widest uppercase">Procedural Cosmic Anomaly</p>
+                  <h3 className="text-white font-black text-xl tracking-wide uppercase">{currentChoices[0]?.name}</h3>
+                  <p className="text-slate-400 text-xs leading-relaxed">
+                    A rare dimensional tear has appeared. Buying this option grants you a permanent Dark Matter Harvester. Or, skip this choice to generate standard resources.
+                  </p>
+                </div>
+
+                <div className="p-4 bg-[#0A0B10]/90 rounded-lg border border-[#242940] flex justify-between items-center text-xs">
+                  <span className="text-slate-400">Harvester Cost:</span>
+                  <span className="text-amber-400 font-mono font-black">{currentChoices[0]?.cost.toLocaleString()} Credits</span>
+                </div>
+
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <button 
+                    onClick={() => expandNode(currentChoices[0])}
+                    disabled={currency < currentChoices[0]?.cost}
+                    className={`py-3 px-4 rounded-xl font-black text-[11px] uppercase tracking-widest transition-all duration-200 ${
+                      currency >= currentChoices[0]?.cost 
+                        ? 'bg-indigo-500 hover:bg-indigo-400 text-white shadow-lg active:scale-95' 
+                        : 'bg-slate-900 border border-slate-800 text-slate-500 cursor-not-allowed'
+                    }`}
+                  >
+                    Deploy Harvester Unit
+                  </button>
+                  <button 
+                    onClick={skipHarvester}
+                    className="py-3 px-4 rounded-xl font-black text-[11px] uppercase tracking-widest border border-slate-700 bg-[#11131E] hover:bg-[#1C1F32] text-slate-300 transition-all active:scale-95"
+                  >
+                    Skip & Show Normal Options
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                {currentChoices.map((node) => {
+                  let pulseClass = 'border-[#24283B]';
+                  let factionSymbol = '⚙️';
+                  let factionColor = 'text-cyan-400 bg-cyan-950/40 border-cyan-800';
+
+                  if (node.isGodRoll) pulseClass = 'gold-pulse border-2';
+                  else if (node.isDud) pulseClass = 'border-[#F7768E] border-dashed opacity-75';
+                  else if (node.pathType === 'Heavy') pulseClass = 'border-purple-500/80 shadow-md shadow-purple-500/10';
+                  else if (node.pathType === 'Volatile') pulseClass = 'volatile-pulse border-pink-500/80';
+
+                  if (node.faction === 'Bio') {
+                    factionSymbol = '🧬';
+                    factionColor = 'text-emerald-400 bg-emerald-950/40 border-emerald-800';
+                  } else if (node.faction === 'Cosmic') {
+                    factionSymbol = '✨';
+                    factionColor = 'text-pink-400 bg-pink-950/40 border-pink-800';
+                  }
+
+                  return (
+                    <div 
+                      key={node.id} 
+                      className={`p-5 rounded-xl border bg-[#121422]/90 flex flex-col justify-between transition-all duration-200 hover:bg-[#161a2f] hover:-translate-y-1 shadow-lg ${pulseClass}`}
+                    >
+                      <div>
+                        <div className="flex flex-row justify-between items-start mb-3 gap-2">
+                          <div className="flex flex-col">
+                            <span className="text-[9px] text-slate-400 font-bold uppercase tracking-widest mb-1">Timeline Node</span>
+                            <h3 className="text-white font-black text-base tracking-wide leading-tight">{node.name}</h3>
+                          </div>
+                          <span className={`text-[9px] px-2 py-1 rounded font-black uppercase tracking-widest ${
+                            node.pathType === 'Stable' ? 'bg-[#24283B] text-slate-300' :
+                            node.pathType === 'Heavy' ? 'bg-purple-900/50 text-purple-300 border border-purple-800' :
+                            'bg-pink-900/50 text-pink-300 border border-pink-800'
+                          }`}>
+                            {node.pathType}
+                          </span>
+                        </div>
+
+                        <div className="flex flex-row gap-x-2 mb-4">
+                          <span className={`px-2 py-0.5 rounded border text-[9px] font-extrabold tracking-wider ${factionColor}`}>
+                            {factionSymbol} {node.faction} ALIGNMENT
+                          </span>
+                        </div>
+
+                        {node.isGodRoll && (
+                          <div className="mb-4 p-2 rounded bg-green-950/40 border border-green-700/60 shadow-inner">
+                            <p className="font-black text-[9px] text-[#9ECE6A] uppercase tracking-widest text-center animate-pulse">
+                              ⭐ QUANTUM JACKPOT DETECTED
+                            </p>
+                          </div>
+                        )}
+                        {node.isDud && (
+                          <div className="mb-4 p-2 rounded bg-red-950/40 border border-red-900/60">
+                            <p className="font-black text-[9px] text-[#F7768E] uppercase tracking-widest text-center">
+                              ⚠️ UNSTABLE RADIATION DISRUPTOR
+                            </p>
+                          </div>
+                        )}
+
+                        <div className="space-y-2.5 mb-5 border-t border-[#1F2335] pt-3">
+                          <div className="flex justify-between text-xs tracking-wide">
+                            <span className="text-slate-400">Acquisition Cost:</span>
+                            <span className="text-white font-black">{node.cost.toLocaleString()} Credits</span>
+                          </div>
+                          <div className="flex justify-between text-xs tracking-wide">
+                            <span className="text-slate-400">Estimated Return:</span>
+                            <span className="text-[#9ECE6A] font-black">+{node.yield.toLocaleString()}/s IPS</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="space-y-2 mt-auto">
+                        <button 
+                          onClick={() => expandNode(node)}
+                          disabled={currency < node.cost}
+                          className={`w-full py-3 px-4 rounded-lg font-black text-[11px] uppercase tracking-widest transition-all duration-200 ${
+                            currency >= node.cost 
+                              ? 'bg-[#38BDF8] text-black hover:bg-[#5cd4ff] shadow-md shadow-[#38bdf8]/10 active:scale-[0.98]' 
+                              : 'bg-[#2b2f48]/50 text-slate-500 cursor-not-allowed border border-slate-800/50'
+                          }`}
+                        >
+                          Initialize Discovery Point
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* PANEL B: PRESTIGE NODE SHOP */}
+        {activeTab === 'upgrades' && (
+          <div className="animate-fade-in space-y-6">
+            <div className="p-5 bg-[#11131E]/95 rounded-xl border border-[#242940] shadow-xl">
+              <h2 className="text-[#38BDF8] text-[10px] font-extrabold tracking-widest uppercase mb-1">
+                Cybernetic Prestige Terminal
+              </h2>
+              <p className="text-slate-400 text-xs">
+                Acquire permanent operational modifiers by spending collected tokens. Locked node tiers remain cloaked in cybernetic fog.
+              </p>
+            </div>
+
+            {/* Tree Map Display */}
+            <div className="space-y-6 p-4 rounded-xl bg-[#090b10] border border-[#1f243c]">
+              {tiers.map((tierIndex) => {
+                const tierNodes = Object.values(UPGRADE_TREE).filter(node => node.tier === tierIndex);
+
+                return (
+                  <div key={tierIndex} className="space-y-3">
+                    <p className="text-slate-500 text-[10px] font-black tracking-widest text-center uppercase">
+                      Upgrade Tier {tierIndex}
+                    </p>
+                    <div className="flex flex-row justify-center gap-4 flex-wrap">
+                      {tierNodes.map((node) => {
+                        const isPurchased = purchasedNodes.includes(node.id);
+                        const isUnlocked = node.parents.length === 0 || node.parents.some(p => purchasedNodes.includes(p));
+
+                        if (!isUnlocked && !isPurchased) {
+                          return (
+                            <div key={node.id} className="w-[180px] h-[140px] p-4 rounded-xl bg-[#070911]/60 border border-dashed border-slate-800/60 flex flex-col justify-center items-center opacity-40">
+                              <span className="text-2xl mb-1">🔒</span>
+                              <p className="text-slate-600 text-[9px] font-black uppercase tracking-widest">Locked</p>
+                            </div>
+                          );
+                        }
+
+                        return (
+                          <button 
+                            key={node.id} 
+                            onClick={() => buyUpgradeNode(node.id)}
+                            disabled={isPurchased || prestigeTokens < node.cost}
+                            style={{ borderColor: isPurchased ? node.color : '#1e293b' }}
+                            className={`w-[190px] h-[145px] p-4 rounded-xl border bg-[#131521] flex flex-col justify-between text-left transition-all duration-200 ${
+                              isPurchased 
+                                ? 'border-2 shadow-md shadow-cyan-500/5 bg-[#181a2b]' 
+                                : 'border-slate-800 hover:border-slate-600 hover:bg-[#181c2f]'
+                            }`}
+                          >
+                            <div>
+                              <p className={`font-black text-xs leading-snug tracking-wide ${isPurchased ? 'text-white font-extrabold' : 'text-slate-300'}`}>
+                                {node.name}
+                              </p>
+                              <p className="text-[10px] text-slate-400 mt-1.5 leading-relaxed line-clamp-3">
+                                {node.desc}
+                              </p>
+                            </div>
+                            <div className="mt-2 pt-2 border-t border-[#24283B] w-full flex items-center justify-center">
+                              {isPurchased ? (
+                                <span className="text-[9px] text-[#9ECE6A] font-black tracking-widest uppercase">✓ Installed</span>
+                              ) : (
+                                <span className={`text-[9px] font-black tracking-widest uppercase ${prestigeTokens >= node.cost ? 'text-[#BB9AF3]' : 'text-slate-500'}`}>
+                                  Install: {node.cost} Tokens
+                                </span>
+                              )}
+                            </div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* SECTORS/CHALLENGE PRESTIGE RESET BLOCK */}
+            <div className="p-5 rounded-xl border border-red-900/60 bg-[#160E12] shadow-xl">
+              <h3 className="text-red-400 font-black text-sm tracking-widest mb-1.5 uppercase">Wipe Timeline (Prestige Quantum Drive)</h3>
+              <p className="text-slate-300 text-xs mb-4 leading-relaxed">
+                Collapsing your current credit line returns you back to square one with Depth 0. In exchange, you secure permanent prestige currency. You can choose to trigger the shift with a sector mutator:
+              </p>
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-5">
+                {CHALLENGES.map((ch) => (
+                  <div 
+                    key={ch.id}
+                    onClick={() => triggerPrestige(ch.id)}
+                    className="p-4 rounded-lg bg-[#2A1116] border border-red-900/40 hover:border-red-500 transition-all duration-200 cursor-pointer flex flex-col justify-between hover:bg-[#34141c]"
+                  >
+                    <div className="flex items-center gap-2 mb-2">
+                      <span className="text-xl">{ch.badge}</span>
+                      <h4 className="text-white font-black text-xs uppercase tracking-wider">{ch.name}</h4>
+                    </div>
+                    <p className="text-slate-400 text-[10px] leading-relaxed mb-3">{ch.desc}</p>
+                    <span className="mt-auto block text-center py-2 px-3 rounded bg-red-950 hover:bg-red-900 text-red-300 font-black text-[9px] tracking-widest uppercase border border-red-800">
+                      Prestige with Mutator
+                    </span>
+                  </div>
+                ))}
+              </div>
+
+              <button 
+                onClick={() => triggerPrestige(null)}
+                className="w-full py-4 rounded-lg bg-[#EF4444] hover:bg-red-500 text-white font-black text-xs tracking-widest uppercase active:scale-[0.99] transition-all duration-150 shadow-lg shadow-red-950/20"
+              >
+                STANDARD PRESTIGE (NO MUTATOR) — CLAIM +{Math.floor(Math.pow(currentDepth / 3, 2)).toLocaleString()} TOKENS
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* PANEL C: AUTOMINER (DARK MATTER SHOP) */}
+        {activeTab === 'autominer' && (
+          <div className="animate-fade-in space-y-6">
+            
+            {/* CONDITIONAL LOCK OVERLAY ON TAB ACCESS */}
+            {!isDMMineUnlocked ? (
+              <div className="flex flex-col items-center justify-center p-8 text-center min-h-[400px] bg-[#11131E]/80 border border-red-900/40 rounded-xl relative overflow-hidden">
+                <div className="absolute inset-0 bg-[#160E12]/50 pointer-events-none" />
+                <span className="text-5xl mb-4 animate-bounce">🔒</span>
+                <h3 className="text-red-400 font-black text-lg uppercase tracking-widest mb-2">SYSTEM LOCKED</h3>
+                <p className="text-slate-400 text-xs max-w-md mb-6 leading-relaxed">
+                  The Dark Matter extraction subgrid is offline. You must purchase the <strong className="text-[#BB9AF3]">Tier 5 "Dark Matter Resonance"</strong> upgrade in the Prestige Lab using Prestige Tokens to unlock this tab.
+                </p>
+                <button
+                  onClick={() => setActiveTab('upgrades')}
+                  className="px-6 py-2.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white font-black text-xs uppercase tracking-widest transition-all shadow-md active:scale-95 animate-pulse"
+                >
+                  Go to Prestige Lab
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="p-5 rounded-xl border border-indigo-900/60 bg-[#13101C] grid grid-cols-1 md:grid-cols-3 gap-4 shadow-xl">
+                  <div className="border-b md:border-b-0 md:border-r border-indigo-950 pb-3 md:pb-0 md:pr-6">
+                    <span className="text-[9px] text-indigo-300 font-extrabold uppercase tracking-widest">Unrefined Matter</span>
+                    <h3 className="text-2xl font-black text-indigo-400 font-mono mt-1">{darkMatter.toFixed(2)} DM</h3>
+                    <p className="text-[10px] text-slate-400 mt-1">Acquired from permanent milestone auto-miners.</p>
+                  </div>
+                  <div className="border-b md:border-b-0 md:border-r border-indigo-950 pb-3 md:pb-0 md:pr-6">
+                    <span className="text-[9px] text-slate-400 font-extrabold uppercase tracking-widest">Active Miner Nodes</span>
+                    <h3 className="text-2xl font-black text-white mt-1">{darkMatterHarvesters} Harvesters</h3>
+                    <p className="text-[10px] text-slate-400 mt-1">Converts Depth milestones above depth 15.</p>
+                  </div>
+                  <div>
+                    <span className="text-[9px] text-slate-400 font-extrabold uppercase tracking-widest">Gathering Efficiency</span>
+                    <h3 className="text-2xl font-black text-[#9ECE6A] mt-1">{(harvesterMultiplier * 100).toFixed(0)}%</h3>
+                    <p className="text-[10px] text-slate-400 mt-1">Tachyon extraction upgrade stack multiplier.</p>
+                  </div>
+                </div>
+
+                <h3 className="text-[#38BDF8] text-[10px] font-extrabold tracking-widest uppercase mb-4">
+                  Auto-Miner Utility Upgrades
+                </h3>
+
+                <div className="space-y-4">
+                  {/* UPGRADE 1: UNLOCK AUTOBUYER */}
+                  <div className="p-4 rounded-xl bg-[#151724] border border-[#24283B] flex flex-col md:flex-row md:items-center justify-between gap-4 hover:bg-[#1a1c2d] transition-all duration-200">
+                    <div className="flex-1">
+                      <h4 className="text-slate-200 font-black text-sm uppercase tracking-wider">Chronos Auto-Buyer Engine</h4>
+                      <p className="text-slate-400 text-xs mt-1">
+                        Buys the best high-variance choices on the map every {autoBuyerInterval}s. (Saves automation clicking).
+                      </p>
+                    </div>
+                    <button 
+                      onClick={() => buyDMUpgrade('autobuy_unlock')}
+                      disabled={autoBuyerActive || darkMatter < 50}
+                      className={`py-2.5 px-5 rounded-lg font-black text-xs uppercase tracking-widest transition-all duration-200 ${
+                        autoBuyerActive 
+                          ? 'bg-green-950/40 border border-green-500 text-green-400 cursor-default' 
+                          : darkMatter >= 50 
+                            ? 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-md active:scale-[0.98]' 
+                            : 'bg-[#2b2f48]/50 text-slate-500 cursor-not-allowed border border-slate-800/50'
+                      }`}
+                    >
+                      {autoBuyerActive ? '✓ Installed' : 'Install: 50 DM'}
+                    </button>
+                  </div>
+
+                  {/* UPGRADE 2: AUTOBUYER SPEEDUP */}
+                  <div className="p-4 rounded-xl bg-[#151724] border border-[#24283B] flex flex-col md:flex-row md:items-center justify-between gap-4 hover:bg-[#1a1c2d] transition-all duration-200">
+                    <div className="flex-1">
+                      <h4 className="text-slate-200 font-black text-sm uppercase tracking-wider">Sub-Processor Overclocker</h4>
+                      <p className="text-slate-400 text-xs mt-1">
+                        Accelerates the scan interval speed of the Auto-buyer by -0.5s (Min scan speed 1s).
+                      </p>
+                    </div>
+                    <button 
+                      onClick={() => buyDMUpgrade('autobuy_speed')}
+                      disabled={!autoBuyerActive || darkMatter < 80}
+                      className={`py-2.5 px-5 rounded-lg font-black text-xs uppercase tracking-widest transition-all duration-200 ${
+                        darkMatter >= 80 && autoBuyerActive
+                          ? 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-md active:scale-[0.98]' 
+                          : 'bg-[#2b2f48]/50 text-slate-500 cursor-not-allowed border border-slate-800/50'
+                      }`}
+                    >
+                      Install: 80 DM
+                    </button>
+                  </div>
+
+                  {/* UPGRADE 3: HARVESTER EFFICIENCY */}
+                  <div className="p-4 rounded-xl bg-[#151724] border border-[#24283B] flex flex-col md:flex-row md:items-center justify-between gap-4 hover:bg-[#1a1c2d] transition-all duration-200">
+                    <div className="flex-1">
+                      <h4 className="text-slate-200 font-black text-sm uppercase tracking-wider">Tachyon Extractor Grids</h4>
+                      <p className="text-slate-400 text-xs mt-1">
+                        Overclocks your milestone harvesters to output +50% DM passive yield continuously.
+                      </p>
+                    </div>
+                    <button 
+                      onClick={() => buyDMUpgrade('harvester_efficiency')}
+                      disabled={darkMatter < 150}
+                      className={`py-2.5 px-5 rounded-lg font-black text-xs uppercase tracking-widest transition-all duration-200 ${
+                        darkMatter >= 150 
+                          ? 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-md active:scale-[0.98]' 
+                          : 'bg-[#2b2f48]/50 text-slate-500 cursor-not-allowed border border-slate-800/50'
+                      }`}
+                    >
+                      Install: 150 DM
+                    </button>
+                  </div>
+                </div>
+
+                {/* 🧪 PLAYTIME DEMO TESTING TOOLBOX */}
+                <div className="p-5 rounded-xl border border-dashed border-amber-900/50 bg-[#16120E] shadow-lg">
+                  <h4 className="text-amber-500 font-black text-sm uppercase tracking-widest mb-1.5 flex items-center gap-1.5">
+                    <span>⏱️</span> DEBUG WARP TERMINAL
+                  </h4>
+                  <p className="text-slate-300 text-xs mb-4 leading-relaxed">
+                    Generative idle scales deep into minutes/hours. Use these controls to instantly leap ahead in time for rapid evaluation of passive multipliers and mechanics:
+                  </p>
+                  <div className="flex flex-col sm:flex-row gap-3">
+                    <button 
+                      onClick={() => simulateOfflineProgress(1)}
+                      className="flex-1 py-3 px-4 rounded-lg bg-amber-950 hover:bg-amber-900 text-amber-300 font-black text-xs uppercase tracking-widest border border-amber-800 transition-all duration-200 active:scale-[0.98]"
+                    >
+                      Fast Forward +1 Hour
+                    </button>
+                    <button 
+                      onClick={() => simulateOfflineProgress(8)}
+                      className="flex-1 py-3 px-4 rounded-lg bg-amber-950 hover:bg-amber-900 text-amber-300 font-black text-xs uppercase tracking-widest border border-amber-800 transition-all duration-200 active:scale-[0.98]"
+                    >
+                      Fast Forward +8 Hours
+                    </button>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* PANEL D: HYPER-PRESTIGE SINGULARITY COLLAPSE */}
+        {activeTab === 'singularity' && (
+          <div className="animate-fade-in space-y-6">
+            <div className="p-5 rounded-xl border border-pink-700/60 bg-[#1E0E15] shadow-xl">
+              <h3 className="text-pink-400 font-black text-base uppercase tracking-widest mb-1.5">The Singularity Chamber</h3>
+              <p className="text-slate-300 text-xs mb-5 leading-relaxed">
+                Unlock cosmic automation. Reaching Depth 50 opens the pathway to trigger a Dimensional Collapse, turning your current tier assets and tokens into non-resetting Singularity Shards.
+              </p>
+
+              {currentDepth < 50 ? (
+                <div className="p-4 rounded-lg bg-slate-950/80 border border-slate-800 text-center">
+                  <span className="text-slate-500 font-extrabold text-xs uppercase tracking-widest">
+                    🔒 Shrine Sealed (Achieve Depth 50) — Progress: {currentDepth}/50
+                  </span>
+                </div>
+              ) : (
+                <button 
+                  onClick={triggerDimensionalCollapse}
+                  className="w-full py-4 rounded-lg bg-pink-600 hover:bg-pink-500 text-white font-black text-xs uppercase tracking-widest transition-all duration-200 active:scale-[0.99] shadow-lg shadow-pink-950/40 animate-pulse"
+                >
+                  🌟 TRIGGER DIMENSIONAL COLLAPSE — SECURE +{1 + Math.floor((currentDepth - 50) / 5)} SHARDS 🌟
+                </button>
+              )}
+            </div>
+
+            <h3 className="text-[#38BDF8] text-[10px] font-extrabold tracking-widest uppercase mb-4">
+              Singularity Lab Permanent Upgrades
+            </h3>
+
+            <div className="space-y-4">
+              {/* UPGRADE 1: SEED LOCKER */}
+              <div className="p-4 rounded-xl bg-[#151724] border border-[#24283B] flex flex-col md:flex-row md:items-center justify-between gap-4 hover:bg-[#1a1c2d] transition-all duration-200">
+                <div className="flex-1">
+                  <h4 className="text-slate-200 font-black text-sm uppercase tracking-wider">Chronos Seed Locker</h4>
+                  <p className="text-slate-400 text-xs mt-1">
+                    Permanently locks your current high-performing seed map across all standard prestiges. Essential for preserving jackpot nodes.
+                  </p>
+                  {unlockedSingularityUpgrades.includes('seed_locker') && (
+                    <button 
+                      onClick={() => setIsSeedLocked(!isSeedLocked)}
+                      className={`mt-3 py-1.5 px-3 rounded text-[9px] font-black uppercase tracking-widest transition-all duration-150 ${
+                        isSeedLocked ? 'bg-green-950 border border-green-500 text-green-400' : 'bg-[#202436] text-slate-400 border border-slate-700'
+                      }`}
+                    >
+                      {isSeedLocked ? '✓ Seed Locker Active' : '✗ Locker Suspended'}
+                    </button>
+                  )}
+                </div>
+                <button 
+                  onClick={() => buySingularityUpgrade('seed_locker', 1)}
+                  disabled={singularityShards < 1 || unlockedSingularityUpgrades.includes('seed_locker')}
+                  className={`py-2.5 px-5 rounded-lg font-black text-xs uppercase tracking-widest transition-all duration-200 ${
+                    unlockedSingularityUpgrades.includes('seed_locker') 
+                      ? 'bg-pink-950/30 border border-pink-700 text-pink-400 cursor-default' 
+                      : singularityShards >= 1 
+                        ? 'bg-pink-600 hover:bg-pink-500 text-white shadow-md active:scale-[0.98]' 
+                        : 'bg-[#2b2f48]/50 text-slate-500 cursor-not-allowed border border-slate-800/50'
+                  }`}
+                >
+                  {unlockedSingularityUpgrades.includes('seed_locker') ? '✓ Unlocked' : 'Buy: 1 Shard'}
+                </button>
+              </div>
+
+              {/* UPGRADE 2: AUTOMATIC PRESTIGE */}
+              <div className="p-4 rounded-xl bg-[#151724] border border-[#24283B] flex flex-col md:flex-row md:items-center justify-between gap-4 hover:bg-[#1a1c2d] transition-all duration-200">
+                <div className="flex-1">
+                  <h4 className="text-slate-200 font-black text-sm uppercase tracking-wider">Prestige Core Automation</h4>
+                  <p className="text-slate-400 text-xs mt-1">
+                    Overclocks your standard Prestige yields. Permanent +100% token generation scaling.
+                  </p>
+                </div>
+                <button 
+                  onClick={() => buySingularityUpgrade('automated_prestige', 2)}
+                  disabled={singularityShards < 2 || unlockedSingularityUpgrades.includes('automated_prestige')}
+                  className={`py-2.5 px-5 rounded-lg font-black text-xs uppercase tracking-widest transition-all duration-200 ${
+                    unlockedSingularityUpgrades.includes('automated_prestige') 
+                      ? 'bg-pink-950/30 border border-pink-700 text-pink-400 cursor-default' 
+                      : singularityShards >= 2 
+                        ? 'bg-pink-600 hover:bg-pink-500 text-white shadow-md active:scale-[0.98]' 
+                        : 'bg-[#2b2f48]/50 text-slate-500 cursor-not-allowed border border-slate-800/50'
+                  }`}
+                >
+                  {unlockedSingularityUpgrades.includes('automated_prestige') ? '✓ Unlocked' : 'Buy: 2 Shards'}
+                </button>
+              </div>
+
+              {/* UPGRADE 3: UNIVERSAL CATALYST */}
+              <div className="p-4 rounded-xl bg-[#151724] border border-[#24283B] flex flex-col md:flex-row md:items-center justify-between gap-4 hover:bg-[#1a1c2d] transition-all duration-200">
+                <div className="flex-1">
+                  <h4 className="text-slate-200 font-black text-sm uppercase tracking-wider">Universal Catalyst Matrix</h4>
+                  <p className="text-slate-400 text-xs mt-1">
+                    Triggers non-resetting cosmic core overcharges. Flat 2x credits production multiplier. (Stacks with everything!).
+                  </p>
+                </div>
+                <button 
+                  onClick={() => buySingularityUpgrade('universal_catalyst', 3)}
+                  disabled={singularityShards < 3 || unlockedSingularityUpgrades.includes('universal_catalyst')}
+                  className={`py-2.5 px-5 rounded-lg font-black text-xs uppercase tracking-widest transition-all duration-200 ${
+                    unlockedSingularityUpgrades.includes('universal_catalyst') 
+                      ? 'bg-pink-950/30 border border-pink-700 text-pink-400 cursor-default' 
+                      : singularityShards >= 3 
+                        ? 'bg-pink-600 hover:bg-pink-500 text-white shadow-md active:scale-[0.98]' 
+                        : 'bg-[#2b2f48]/50 text-slate-500 cursor-not-allowed border border-slate-800/50'
+                  }`}
+                >
+                  {unlockedSingularityUpgrades.includes('universal_catalyst') ? '✓ Unlocked' : 'Buy: 3 Shards'}
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
+      </main>
+    </div>
+  );
+}
+
+export default function App() {
+  return (
+    <GameProvider>
+      <GameScreen />
+    </GameProvider>
+  );
+}
